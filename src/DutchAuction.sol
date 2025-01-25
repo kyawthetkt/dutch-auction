@@ -2,8 +2,9 @@
 pragma solidity ^0.8.18;
 
 import { IERC721 } from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract DutchAuction {
+contract DutchAuction is ReentrancyGuard {
 
     event Sell(address indexed seller, address indexed nftAddress, uint256 nftId);
     event Buy(address indexed buyer, address indexed nftAddress, uint256 nftId);
@@ -16,9 +17,11 @@ contract DutchAuction {
         uint256 expiresAt;
         uint256 discountRate;
     }
-    mapping(address _nft => mapping(uint256 _id => Auction _auction)) public s_auctions;    constructor() {}
+    mapping(address _nft => mapping(uint256 _id => Auction _auction)) public s_auctions;
+    
+    constructor() {}
 
-    function sell(uint256 _startingPrice, uint256 _discountRate, address _nft, uint256 _id, uint256 _duration) external {
+    function sell(uint256 _startingPrice, uint256 _discountRate, address _nft, uint256 _id, uint256 _duration) external nonReentrant {
 
         require(IERC721(_nft).ownerOf(_id) == msg.sender, "DA: you are not owner.");
         // Check if already listed
@@ -36,7 +39,7 @@ contract DutchAuction {
         emit Sell(msg.sender, _nft, _id);
     }
 
-    function buy(address _nft, uint256 _id) external payable {
+    function buy(address _nft, uint256 _id) external payable nonReentrant {
 
         Auction storage l_auction = s_auctions[_nft][_id];
         require(l_auction.seller != address(0), "DA: NFT Not On Sale");
@@ -44,8 +47,14 @@ contract DutchAuction {
 
         uint256 price = getPrice(_nft, _id);
         require(msg.value >= price , "DA: Invalid Price.");
-        
+
+        (bool sent_to_seller,) = payable(l_auction.seller).call{value: price}("");
+        require(sent_to_seller, "DA: Failed To Send.");
+
         IERC721(_nft).transferFrom(l_auction.seller, msg.sender, _id);
+        
+        delete s_auctions[_nft][_id];
+        emit Buy(msg.sender, _nft, _id);
 
         uint256 refund = msg.value - price;
         if ( refund > 0 ) {
@@ -53,15 +62,8 @@ contract DutchAuction {
             require(sent, "DA: Faild To Refund");
         }
 
-        (bool sent_to_seller,) = payable(l_auction.seller).call{value: price}("");
-        require(sent_to_seller, "DA: Failed To Send.");
-
-        if ( sent_to_seller ) {
-            delete s_auctions[_nft][_id];
-            emit Buy(msg.sender, _nft, _id);
-        }
-
     }
+
     function getPrice(address _nft, uint256 _id) public view returns (uint256) {
         Auction storage l_auction = s_auctions[_nft][_id];
         uint256 timeElapsed = block.timestamp - l_auction.startsAt;
